@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
 🌍 Telegram Nature Bot — генерирует и публикует посты о природе и планете.
-Использует GigaChat от Сбера.
+Использует прямые запросы к GigaChat API v1 (проверенный метод).
 Реализует круговой обход топиков без повторов.
 """
 
 import os
 import sys
 import json
+import uuid
 import random
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
-from gigachat import GigaChat
-from gigachat.models import ChatCompletionRequest, ChatMessage
 
 # ──────────────────────────── Настройки ────────────────────────────
 
@@ -26,22 +25,16 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 GIGACHAT_CREDENTIALS = os.environ.get("GIGACHAT_CREDENTIALS", "")
 
-# GIGACHAT_API_PERS — для физлиц, GIGACHAT_API_CORP — для юрлиц (постоплата)
-GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-
-# Используем GigaChat-Plus как надежный дефолт для v2 API. 
-# Можно переопределить через секрет GIGACHAT_MODEL (например, GigaChat-Max)
-GIGACHAT_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat-Plus")
-
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 STATE_FILE = Path("used_topics.json")
 TOPICS_FILE = Path("topics.json")
 
+VERIFY_SSL = False  # Как в вашем рабочем скрипте
+
 # ──────────────────── Загрузка топиков из файла ────────────────────
 
 def load_topics() -> list:
-    """Загружает список топиков из файла topics.json."""
     if not TOPICS_FILE.exists():
         logger.error("Файл %s не найден!", TOPICS_FILE)
         sys.exit(1)
@@ -63,27 +56,23 @@ def load_topics() -> list:
 FALLBACK_POSTS = [
     "🌊 **Знаете ли вы?**\n\nОкеан покрывает более 70% поверхности Земли, но мы исследовали менее 5% его глубин. В Марианской впадине давление в 1000 раз выше, чем на поверхности — и там всё равно есть жизнь!\n\n#океан #природа #планета",
     "🍄 **Удивительный факт**\n\nПод лесом скрывается гигантская грибная сеть — микориза. Деревья обмениваются через неё питательными веществами и даже «предупреждают» соседей об опасности. Учёные называют её Wood Wide Web.\n\n#лес #грибы #экология",
-    "🐝 **Без них мы голодны**\n\nОколо 75% мировых продовольственных культур зависят от опыления. Пчёлы, бабочки и даже летучие мыши — невидимые герои нашего стола. Одна пчелиная семья опыляет до 3 млн цветков в день.\n\n#опылители #пчёлы #природа",
-    "🌋 **Вулканы — не только разрушение**\n\nВулканический пепел обогащает почву минералами. Именно благодаря вулканам острова вроде Исландии и Гавайев покрыты буйной растительностью. Разрушение рождает новую жизнь.\n\n#вулканы #геология #планета",
-    "🐋 **Песни океана**\n\nГорбатые киты поют сложные песни, которые длятся часами и распространяются на тысячи километров. Каждый год их мелодии меняются — все самцы в популяции подхватывают новую «версию».\n\n#киты #океан #животные",
+    "🐝 **Без них мы голодны**\n\nОколо 75% мировых продовольственных культур зависят от опыления. Пчёлы, бабочки и даже летучие мыши — невидимые герои нашего стола.\n\n#опылители #пчёлы #природа",
+    "🌋 **Вулканы — не только разрушение**\n\nВулканический пепел обогащает почву минералами. Именно благодаря вулканам острова вроде Исландии и Гавайев покрыты буйной растительностью.\n\n#вулканы #геология #планета",
+    "🐋 **Песни океана**\n\nГорбатые киты поют сложные песни, которые длятся часами и распространяются на тысячи километров. Каждый год их мелодии меняются.\n\n#киты #океан #животные",
 ]
 
 # ──────────────────── Управление состоянием ────────────────────────
 
 def load_used_topics() -> list:
-    """Загружает список использованных топиков из файла."""
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("used_topics", [])
+                return json.load(f).get("used_topics", [])
         except Exception as e:
             logger.warning("Не удалось загрузить %s: %s", STATE_FILE, e)
     return []
 
-
 def save_used_topics(used_topics: list):
-    """Сохраняет список использованных топиков в файл."""
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump({"used_topics": used_topics}, f, ensure_ascii=False, indent=2)
@@ -91,12 +80,7 @@ def save_used_topics(used_topics: list):
     except Exception as e:
         logger.error("Не удалось сохранить %s: %s", STATE_FILE, e)
 
-
 def get_next_topic(topics: list) -> str:
-    """
-    Выбирает следующий топик из неиспользованных.
-    Если все топики использованы — сбрасывает список и начинает по кругу.
-    """
     used_topics = load_used_topics()
     available_topics = [t for t in topics if t not in used_topics]
 
@@ -110,15 +94,37 @@ def get_next_topic(topics: list) -> str:
 
     used_topics.append(selected_topic)
     save_used_topics(used_topics)
-
     return selected_topic
 
-# ──────────────────────── Генерация поста ──────────────────────────
+# ──────────────────────── Генерация поста (ПРЯМОЙ API) ────────────
+
+def get_gigachat_token() -> str | None:
+    """Получает OAuth-токен GigaChat (как в рабочем скрипте)."""
+    url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "RqUID": str(uuid.uuid4()),
+        "Authorization": f"Basic {GIGACHAT_CREDENTIALS}",
+    }
+    data = {"scope": "GIGACHAT_API_PERS"}
+
+    try:
+        response = requests.post(url, headers=headers, data=data, verify=VERIFY_SSL, timeout=30)
+        response.raise_for_status()
+        return response.json().get("access_token")
+    except Exception as e:
+        logger.error("Ошибка получения токена GigaChat: %s", e)
+        return None
 
 def generate_post_ai(topic: str) -> str | None:
-    """Генерирует пост через GigaChat API."""
+    """Генерирует пост через прямой запрос к GigaChat API v1."""
     if not GIGACHAT_CREDENTIALS:
         logger.warning("GIGACHAT_CREDENTIALS не задан — использую фолбэк.")
+        return None
+
+    access_token = get_gigachat_token()
+    if not access_token:
         return None
 
     prompt = f"""Ты — автор популярного Telegram-канала о природе и планете Земля.
@@ -133,46 +139,48 @@ def generate_post_ai(topic: str) -> str | None:
 - Не используй Markdown-ссылки, только жирный шрифт и эмодзи.
 - Не добавляй вступлений вроде «Конечно!» — сразу пост."""
 
+    url = "https://api.giga.chat/v1/chat/completions" # ЯВНО УКАЗАН v1
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    
+    # ВАЖНО: Используем модель "GigaChat-2", как в вашем рабочем скрипте
+    payload = {
+        "model": "GigaChat-2",
+        "messages": [
+            {"role": "system", "content": "Ты — талантливый научпоп-автор Telegram-канала о природе."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.9,
+        "max_tokens": 400,
+    }
+
     try:
-        logger.info("Используемая модель GigaChat: %s", GIGACHAT_MODEL)
+        response = requests.post(url, headers=headers, json=payload, verify=VERIFY_SSL, timeout=30)
+        response.raise_for_status()
         
-        with GigaChat(
-            credentials=GIGACHAT_CREDENTIALS,
-            scope=GIGACHAT_SCOPE,
-            verify_ssl_certs=False,
-        ) as client:
-            request = ChatCompletionRequest(
-                messages=[
-                    ChatMessage(role="system", content="Ты — талантливый научпоп-автор Telegram-канала о природе. Пиши красиво и образно."),
-                    ChatMessage(role="user", content=prompt)
-                ],
-                model=GIGACHAT_MODEL,
-                temperature=0.9,
-                max_tokens=400,
-            )
-            response = client.chat.create(request)
-            
-        # Извлекаем текст из ответа (структура GigaChat SDK)
-        text = response.messages[0].content[0].text.strip()
+        # Парсим ответ в формате OpenAI-compatible
+        result = response.json()
+        text = result["choices"][0]["message"]["content"].strip()
+        
         logger.info("Пост сгенерирован успешно (%d символов).", len(text))
         return text
     except Exception as e:
         logger.error("Ошибка генерации через GigaChat: %s", e)
+        if 'response' in locals():
+            logger.error("Ответ сервера: %s", response.text[:500])
         return None
 
-
 def generate_post(topics: list) -> str:
-    """Возвращает пост: AI-генерация или фолбэк."""
     topic = get_next_topic(topics)
     post = generate_post_ai(topic)
-    if post:
-        return post
-    return random.choice(FALLBACK_POSTS)
+    return post if post else random.choice(FALLBACK_POSTS)
 
 # ──────────────────────── Отправка в Telegram ──────────────────────
 
 def send_to_telegram(text: str) -> bool:
-    """Отправляет сообщение в Telegram-канал."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHANNEL_ID не заданы!")
         sys.exit(1)
@@ -207,15 +215,12 @@ def send_to_telegram(text: str) -> bool:
 # ──────────────────────────── Main ─────────────────────────────────
 
 def main():
-    logger.info("🚀 Запуск Nature Telegram Bot (GigaChat) — %s", datetime.now(timezone.utc).isoformat())
-
+    logger.info("🚀 Запуск Nature Telegram Bot (GigaChat v1 Direct) — %s", datetime.now(timezone.utc).isoformat())
     topics = load_topics()
     post = generate_post(topics)
     logger.info("Содержимое поста:\n%s", post)
-
     success = send_to_telegram(post)
     sys.exit(0 if success else 1)
-
 
 if __name__ == "__main__":
     main()
