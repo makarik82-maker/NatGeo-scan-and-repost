@@ -1,0 +1,2 @@
+requests>=2.31.0
+gigachat>=0.1.18
