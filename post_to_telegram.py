@@ -15,6 +15,7 @@ from pathlib import Path
 
 import requests
 from gigachat import GigaChat
+from gigachat.models import ChatCompletionRequest, ChatMessage
 
 # ──────────────────────────── Настройки ────────────────────────────
 
@@ -25,9 +26,11 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 GIGACHAT_CREDENTIALS = os.environ.get("GIGACHAT_CREDENTIALS", "")
 
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+# GIGACHAT_API_PERS — для физлиц, GIGACHAT_API_CORP — для юрлиц (постоплата)
+GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+GIGACHAT_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat")
 
-GIGACHAT_MODEL = "GigaChat"
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 STATE_FILE = Path("used_topics.json")
 TOPICS_FILE = Path("topics.json")
@@ -92,21 +95,16 @@ def get_next_topic(topics: list) -> str:
     Если все топики использованы — сбрасывает список и начинает по кругу.
     """
     used_topics = load_used_topics()
-
-    # Находим неиспользованные топики
     available_topics = [t for t in topics if t not in used_topics]
 
-    # Если все топики использованы — начинаем по кругу
     if not available_topics:
         logger.info("🔄 Все %d топиков использованы! Начинаем по кругу.", len(topics))
         used_topics = []
         available_topics = topics.copy()
 
-    # Выбираем случайный топик из доступных
     selected_topic = random.choice(available_topics)
     logger.info("Выбран топик: %s", selected_topic)
 
-    # Добавляем в список использованных
     used_topics.append(selected_topic)
     save_used_topics(used_topics)
 
@@ -135,20 +133,23 @@ def generate_post_ai(topic: str) -> str | None:
     try:
         with GigaChat(
             credentials=GIGACHAT_CREDENTIALS,
-            scope="GIGACHAT_API_PN",
+            scope=GIGACHAT_SCOPE,
             verify_ssl_certs=False,
-            model=GIGACHAT_MODEL,
-        ) as giga:
-            response = giga.chat(
+        ) as client:
+            # ✅ Правильный вызов через ChatCompletionRequest
+            request = ChatCompletionRequest(
                 messages=[
-                    {"role": "system", "content": "Ты — талантливый научпоп-автор Telegram-канала о природе. Пиши красиво и образно."},
-                    {"role": "user", "content": prompt},
+                    ChatMessage(role="system", content="Ты — талантливый научпоп-автор Telegram-канала о природе. Пиши красиво и образно."),
+                    ChatMessage(role="user", content=prompt)
                 ],
+                model=GIGACHAT_MODEL,
                 temperature=0.9,
                 max_tokens=400,
             )
-
-        text = response.choices[0].message.content.strip()
+            response = client.chat.create(request)
+            
+        # Извлекаем текст из ответа (структура GigaChat SDK)
+        text = response.messages[0].content[0].text.strip()
         logger.info("Пост сгенерирован через %s (%d символов).", GIGACHAT_MODEL, len(text))
         return text
     except Exception as e:
@@ -204,14 +205,10 @@ def send_to_telegram(text: str) -> bool:
 def main():
     logger.info("🚀 Запуск Nature Telegram Bot (GigaChat) — %s", datetime.now(timezone.utc).isoformat())
 
-    # Загружаем топики из файла
     topics = load_topics()
-
-    # Генерируем пост
     post = generate_post(topics)
     logger.info("Содержимое поста:\n%s", post)
 
-    # Отправляем в Telegram
     success = send_to_telegram(post)
     sys.exit(0 if success else 1)
 
