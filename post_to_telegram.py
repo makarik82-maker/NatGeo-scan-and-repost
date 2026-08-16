@@ -28,7 +28,10 @@ GIGACHAT_CREDENTIALS = os.environ.get("GIGACHAT_CREDENTIALS", "")
 
 # GIGACHAT_API_PERS — для физлиц, GIGACHAT_API_CORP — для юрлиц (постоплата)
 GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-GIGACHAT_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat")
+
+# Используем GigaChat-Plus как надежный дефолт для v2 API. 
+# Можно переопределить через секрет GIGACHAT_MODEL (например, GigaChat-Max)
+GIGACHAT_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat-Plus")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
@@ -131,12 +134,13 @@ def generate_post_ai(topic: str) -> str | None:
 - Не добавляй вступлений вроде «Конечно!» — сразу пост."""
 
     try:
+        logger.info("Используемая модель GigaChat: %s", GIGACHAT_MODEL)
+        
         with GigaChat(
             credentials=GIGACHAT_CREDENTIALS,
             scope=GIGACHAT_SCOPE,
             verify_ssl_certs=False,
         ) as client:
-            # ✅ Правильный вызов через ChatCompletionRequest
             request = ChatCompletionRequest(
                 messages=[
                     ChatMessage(role="system", content="Ты — талантливый научпоп-автор Telegram-канала о природе. Пиши красиво и образно."),
@@ -150,7 +154,7 @@ def generate_post_ai(topic: str) -> str | None:
             
         # Извлекаем текст из ответа (структура GigaChat SDK)
         text = response.messages[0].content[0].text.strip()
-        logger.info("Пост сгенерирован через %s (%d символов).", GIGACHAT_MODEL, len(text))
+        logger.info("Пост сгенерирован успешно (%d символов).", len(text))
         return text
     except Exception as e:
         logger.error("Ошибка генерации через GigaChat: %s", e)
