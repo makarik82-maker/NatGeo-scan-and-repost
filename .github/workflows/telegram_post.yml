@@ -2,20 +2,21 @@ name: 🌿 Nature Telegram Post (GigaChat)
 
 on:
   schedule:
-    # Каждый день в 09:00 и 18:00 UTC
-    - cron: "0 9,13,16,19 * * *"
-  workflow_dispatch:  # Ручной запуск из вкладки Actions
+    - cron: "0 9,18 * * *"
+  workflow_dispatch:
 
 jobs:
   post:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write  # Нужно для коммита состояния
+      contents: write
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Важно для корректной работы auto-commit
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -34,9 +35,7 @@ jobs:
         run: python post_to_telegram.py
 
       - name: 💾 Commit updated state
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add used_topics.json
-          git diff --staged --quiet || git commit -m "🔄 Update used topics state [skip ci]"
-          git push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🔄 Update used topics state [skip ci]"
+          file_pattern: used_topics.json
