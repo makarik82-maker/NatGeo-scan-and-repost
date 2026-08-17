@@ -1,4 +1,4 @@
-name: 🌿 Nature Telegram Post (GigaChat)
+name:  Nature Telegram Post (GigaChat + Images)
 
 on:
   schedule:
@@ -13,10 +13,10 @@ jobs:
       contents: write
 
     steps:
-      - name: 📥 Checkout repository
+      - name:  Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Важно для корректной работы auto-commit
+          fetch-depth: 0
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -27,11 +27,12 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install -r requirements.txt
 
-      - name: 📤 Generate & send post
+      - name:  Generate & send post with image
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GIGACHAT_CREDENTIALS: ${{ secrets.GIGACHAT_CREDENTIALS }}
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}  # Опционально
         run: python post_to_telegram.py
 
       - name: 💾 Commit updated state
