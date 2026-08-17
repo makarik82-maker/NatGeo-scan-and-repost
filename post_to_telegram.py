@@ -13,12 +13,13 @@ import uuid
 import random
 import logging
 import urllib3
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
-# Подавляем предупреждения о непроверенных HTTPS-запросах
+# Подавляем предупреждения о непроверенных HTTPS-запросах (нужно для API Сбера)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ──────────────────────────── Настройки ───────────────────────────
@@ -142,7 +143,7 @@ def generate_post_ai(topic: str, access_token: str) -> tuple[str, str] | None:
 - В конце добавь 2–4 хештега через пробел.
 - Не добавляй вступлений вроде «Конечно!» — сразу пост.
 
-В конце ответа добавь строку:
+В самом конце ответа добавь отдельную строку:
 IMAGE_PROMPT: [краткое описание на английском для генерации картинки, 3-5 слов]"""
 
     url = "https://api.giga.chat/v1/chat/completions"
@@ -169,8 +170,7 @@ IMAGE_PROMPT: [краткое описание на английском для 
         result = response.json()
         full_text = result["choices"][0]["message"]["content"].strip()
         
-        # Извлекаем промпт для картинки
-        image_prompt = topic  # По умолчанию используем топик
+        image_prompt = topic  # По умолчанию используем сам топик
         
         if "IMAGE_PROMPT:" in full_text:
             parts = full_text.split("IMAGE_PROMPT:")
@@ -183,19 +183,19 @@ IMAGE_PROMPT: [краткое описание на английском для 
         return full_text, image_prompt
     
     except Exception as e:
-        logger.error("Ошибка генерации через GigaChat: %s", e)
+        logger.error("Ошибка генерации текста через GigaChat: %s", e)
         return None
 
 # ─────────────────────── Генерация изображения ───────────────────
 
 def generate_image_from_gigachat(image_prompt: str, access_token: str) -> str | None:
-    """Генерирует изображение через GigaChat API."""
-    logger.info("Генерирую изображение по запросу: %s", image_prompt)
+    """Генерирует изображение через GigaChat API (исправленный эндпоинт)."""
+    logger.info("Генерирую изображение через GigaChat по запросу: %s", image_prompt)
     
-    # Улучшаем промпт для лучшего качества
-    enhanced_prompt = f"Photorealistic nature photography: {image_prompt}, high quality, detailed, professional, 4K"
+    enhanced_prompt = f"Photorealistic nature photography: {image_prompt}, high quality, detailed, professional, 4K, highly detailed"
     
-    url = "https://api.giga.chat/v1/files"
+    # ИСПРАВЛЕНО: правильный эндпоинт для генерации изображений
+    url = "https://api.giga.chat/v1/images/generations"
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -203,49 +203,49 @@ def generate_image_from_gigachat(image_prompt: str, access_token: str) -> str | 
     }
     
     payload = {
-        "model": "GigaChat-2-Images",
+        "model": "GigaChat-Pro",  # Для генерации изображений рекомендуется Pro
         "prompt": enhanced_prompt,
         "size": "1024x1024",
+        "response_format": "b64_json"
     }
     
     try:
         response = requests.post(url, headers=headers, json=payload, verify=VERIFY_SSL, timeout=60)
-        response.raise_for_status()
         
-        result = response.json()
-        file_id = result.get("id")
-        
-        if not file_id:
-            logger.error("GigaChat не вернул file_id для изображения")
+        # Железобетонная обработка ошибок: если модель недоступна или лимит, просто возвращаем None
+        if response.status_code != 200:
+            logger.warning("GigaChat вернул ошибку %s при генерации изображения. Переключаюсь на резервный источник.", response.status_code)
             return None
         
-        # Скачиваем сгенерированное изображение
-        download_url = f"https://api.giga.chat/v1/files/{file_id}/content"
-        img_response = requests.get(
-            download_url, 
-            headers={"Authorization": f"Bearer {access_token}"}, 
-            verify=VERIFY_SSL, 
-            timeout=30
-        )
-        img_response.raise_for_status()
+        result = response.json()
+        image_data = result.get("data", [{}])[0]
         
-        # Сохраняем во временный файл
+        if "b64_json" in image_data:
+            img_content = base64.b64decode(image_data["b64_json"])
+        elif "url" in image_data:
+            img_response = requests.get(image_data["url"], timeout=30)
+            img_response.raise_for_status()
+            img_content = img_response.content
+        else:
+            logger.error("Неизвестный формат ответа GigaChat: %s", result)
+            return None
+        
         temp_file = Path("temp_image.jpg")
         with open(temp_file, "wb") as f:
-            f.write(img_response.content)
+            f.write(img_content)
         
-        logger.info("✅ Изображение сгенерировано и сохранено.")
+        logger.info("✅ Изображение успешно сгенерировано GigaChat.")
         return str(temp_file)
-    
+        
     except Exception as e:
-        logger.error("Ошибка генерации изображения: %s", e)
+        logger.warning("Ошибка генерации изображения через GigaChat: %s", e)
         return None
 
 
 def download_image_from_unsplash(query: str) -> str | None:
     """Скачивает релевантное фото с Unsplash по ключевому слову."""
     if not UNSPLASH_ACCESS_KEY:
-        logger.warning("UNSPLASH_ACCESS_KEY не задан — пропускаем Unsplash.")
+        logger.debug("UNSPLASH_ACCESS_KEY не задан — пропускаем Unsplash.")
         return None
     
     url = "https://api.unsplash.com/photos/random"
@@ -262,7 +262,6 @@ def download_image_from_unsplash(query: str) -> str | None:
         data = response.json()
         image_url = data["urls"]["regular"]
         
-        # Скачиваем изображение
         img_response = requests.get(image_url, timeout=15)
         img_response.raise_for_status()
         
@@ -274,7 +273,7 @@ def download_image_from_unsplash(query: str) -> str | None:
         return str(temp_file)
     
     except Exception as e:
-        logger.error("Ошибка загрузки фото с Unsplash: %s", e)
+        logger.warning("Ошибка загрузки фото с Unsplash: %s", e)
         return None
 
 
@@ -283,18 +282,12 @@ def get_relevant_image(topic: str, access_token: str | None) -> str | None:
     Получает релевантное теме изображение.
     Приоритет: 1) GigaChat генерация, 2) Unsplash поиск.
     """
-    if not access_token:
-        logger.warning("Нет токена GigaChat — пробуем Unsplash.")
-        return download_image_from_unsplash(topic)
+    if access_token:
+        image_path = generate_image_from_gigachat(topic, access_token)
+        if image_path:
+            return image_path
     
-    # Пробуем сгенерировать через GigaChat
-    image_path = generate_image_from_gigachat(topic, access_token)
-    
-    if image_path:
-        return image_path
-    
-    # Fallback на Unsplash
-    logger.info("GigaChat не сгенерировал — пробуем Unsplash.")
+    logger.info("GigaChat не сгенерировал изображение — пробую Unsplash.")
     return download_image_from_unsplash(topic)
 
 # ──────────────────────── Отправка в Telegram ──────────────────────
@@ -320,7 +313,6 @@ def send_photo_to_telegram(photo_path: str, caption: str) -> bool:
         
         logger.info("✅ Фото с постом успешно отправлено в %s", TELEGRAM_CHANNEL_ID)
         
-        # Удаляем временный файл
         try:
             Path(photo_path).unlink()
         except Exception:
@@ -363,7 +355,7 @@ def send_text_to_telegram(text: str) -> bool:
                 return True
         return False
     except Exception as e:
-        logger.error(" Неизвестная ошибка: %s", e)
+        logger.error("❌ Неизвестная ошибка: %s", e)
         return False
 
 # ──────────────────────────── Main ─────────────────────────────────
@@ -374,14 +366,10 @@ def main():
     topics = load_topics()
     topic = get_next_topic(topics)
     
-    # Получаем токен GigaChat
     access_token = get_gigachat_token()
-    
-    # Генерируем текст поста И промпт для картинки
     result = generate_post_ai(topic, access_token)
     
     if not result:
-        # Fallback на готовый пост
         post_text = random.choice(FALLBACK_POSTS)
         image_prompt = topic
     else:
@@ -389,12 +377,10 @@ def main():
     
     logger.info("Содержимое поста:\n%s", post_text)
     
-    # Получаем релевантное изображение
     image_path = None
     if access_token or UNSPLASH_ACCESS_KEY:
         image_path = get_relevant_image(image_prompt, access_token)
     
-    # Отправляем пост (с фото или без)
     if image_path and Path(image_path).exists():
         success = send_photo_to_telegram(image_path, post_text)
     else:
