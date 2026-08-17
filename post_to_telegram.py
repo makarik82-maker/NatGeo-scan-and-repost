@@ -11,10 +11,14 @@ import json
 import uuid
 import random
 import logging
+import urllib3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+
+# Подавляем предупреждения о непроверенных HTTPS-запросах (нужно для сертификатов Минцифры)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ──────────────────────────── Настройки ────────────────────────────
 
@@ -30,7 +34,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 STATE_FILE = Path("used_topics.json")
 TOPICS_FILE = Path("topics.json")
 
-VERIFY_SSL = False  # Как в вашем рабочем скрипте
+VERIFY_SSL = False  # Требуется для работы с API Сбера из среды GitHub Actions
 
 # ──────────────────── Загрузка топиков из файла ────────────────────
 
@@ -99,7 +103,7 @@ def get_next_topic(topics: list) -> str:
 # ──────────────────────── Генерация поста (ПРЯМОЙ API) ────────────
 
 def get_gigachat_token() -> str | None:
-    """Получает OAuth-токен GigaChat (как в рабочем скрипте)."""
+    """Получает OAuth-токен GigaChat."""
     url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -139,14 +143,13 @@ def generate_post_ai(topic: str) -> str | None:
 - Не используй Markdown-ссылки, только жирный шрифт и эмодзи.
 - Не добавляй вступлений вроде «Конечно!» — сразу пост."""
 
-    url = "https://api.giga.chat/v1/chat/completions" # ЯВНО УКАЗАН v1
+    url = "https://api.giga.chat/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {access_token}",
     }
     
-    # ВАЖНО: Используем модель "GigaChat-2", как в вашем рабочем скрипте
     payload = {
         "model": "GigaChat-2",
         "messages": [
@@ -161,7 +164,6 @@ def generate_post_ai(topic: str) -> str | None:
         response = requests.post(url, headers=headers, json=payload, verify=VERIFY_SSL, timeout=30)
         response.raise_for_status()
         
-        # Парсим ответ в формате OpenAI-compatible
         result = response.json()
         text = result["choices"][0]["message"]["content"].strip()
         
