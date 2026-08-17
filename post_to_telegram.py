@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 🌍 Telegram Nature Bot — генерирует и публикует посты о природе и планете.
-Использует прямые запросы к GigaChat API v1 (проверенный метод).
+Использует прямые запросы к GigaChat API v1.
+Генерирует РЕЛЕВАНТНЫЕ изображения на основе темы поста.
 Реализует круговой обход топиков без повторов.
 """
 
@@ -17,10 +18,10 @@ from pathlib import Path
 
 import requests
 
-# Подавляем предупреждения о непроверенных HTTPS-запросах (нужно для сертификатов Минцифры)
+# Подавляем предупреждения о непроверенных HTTPS-запросах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ──────────────────────────── Настройки ────────────────────────────
+# ──────────────────────────── Настройки ───────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -28,13 +29,14 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
 GIGACHAT_CREDENTIALS = os.environ.get("GIGACHAT_CREDENTIALS", "")
+UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 STATE_FILE = Path("used_topics.json")
 TOPICS_FILE = Path("topics.json")
 
-VERIFY_SSL = False  # Требуется для работы с API Сбера из среды GitHub Actions
+VERIFY_SSL = False
 
 # ──────────────────── Загрузка топиков из файла ────────────────────
 
@@ -58,11 +60,8 @@ def load_topics() -> list:
 # ──────────────── Фолбэк: база готовых фактов ─────────────────────
 
 FALLBACK_POSTS = [
-    "🌊 **Знаете ли вы?**\n\nОкеан покрывает более 70% поверхности Земли, но мы исследовали менее 5% его глубин. В Марианской впадине давление в 1000 раз выше, чем на поверхности — и там всё равно есть жизнь!\n\n#океан #природа #планета",
-    "🍄 **Удивительный факт**\n\nПод лесом скрывается гигантская грибная сеть — микориза. Деревья обмениваются через неё питательными веществами и даже «предупреждают» соседей об опасности. Учёные называют её Wood Wide Web.\n\n#лес #грибы #экология",
-    "🐝 **Без них мы голодны**\n\nОколо 75% мировых продовольственных культур зависят от опыления. Пчёлы, бабочки и даже летучие мыши — невидимые герои нашего стола.\n\n#опылители #пчёлы #природа",
-    "🌋 **Вулканы — не только разрушение**\n\nВулканический пепел обогащает почву минералами. Именно благодаря вулканам острова вроде Исландии и Гавайев покрыты буйной растительностью.\n\n#вулканы #геология #планета",
-    "🐋 **Песни океана**\n\nГорбатые киты поют сложные песни, которые длятся часами и распространяются на тысячи километров. Каждый год их мелодии меняются.\n\n#киты #океан #животные",
+    "🌊 **Знаете ли вы?**\n\nОкеан покрывает более 70% поверхности Земли, но мы исследовали менее 5% его глубин.\n\n#океан #природа #планета",
+    "🍄 **Удивительный факт**\n\nПод лесом скрывается гигантская грибная сеть — микориза.\n\n#лес #грибы #экология",
 ]
 
 # ──────────────────── Управление состоянием ────────────────────────
@@ -100,7 +99,7 @@ def get_next_topic(topics: list) -> str:
     save_used_topics(used_topics)
     return selected_topic
 
-# ──────────────────────── Генерация поста (ПРЯМОЙ API) ────────────
+# ──────────────────────── GigaChat Token ──────────────────────────
 
 def get_gigachat_token() -> str | None:
     """Получает OAuth-токен GigaChat."""
@@ -121,14 +120,15 @@ def get_gigachat_token() -> str | None:
         logger.error("Ошибка получения токена GigaChat: %s", e)
         return None
 
-def generate_post_ai(topic: str) -> str | None:
-    """Генерирует пост через прямой запрос к GigaChat API v1."""
-    if not GIGACHAT_CREDENTIALS:
-        logger.warning("GIGACHAT_CREDENTIALS не задан — использую фолбэк.")
-        return None
+# ──────────────────────── Генерация текста поста ──────────────────
 
-    access_token = get_gigachat_token()
+def generate_post_ai(topic: str, access_token: str) -> tuple[str, str] | None:
+    """
+    Генерирует пост через GigaChat API.
+    Возвращает кортеж: (текст_поста, промпт_для_картинки)
+    """
     if not access_token:
+        logger.warning("GIGACHAT_CREDENTIALS не задан — использую фолбэк.")
         return None
 
     prompt = f"""Ты — автор популярного Telegram-канала о природе и планете Земля.
@@ -137,11 +137,13 @@ def generate_post_ai(topic: str) -> str | None:
 Требования:
 - Язык: русский.
 - Длина: 3–6 предложений (не более 800 символов).
-- Стиль: живой, увлекательный, научно-популярный. Избегай клише.
+- Стиль: живой, увлекательный, научно-популярный.
 - Начни с подходящего эмодзи и цепляющего заголовка жирным шрифтом (**заголовок**).
 - В конце добавь 2–4 хештега через пробел.
-- Не используй Markdown-ссылки, только жирный шрифт и эмодзи.
-- Не добавляй вступлений вроде «Конечно!» — сразу пост."""
+- Не добавляй вступлений вроде «Конечно!» — сразу пост.
+
+В конце ответа добавь строку:
+IMAGE_PROMPT: [краткое описание на английском для генерации картинки, 3-5 слов]"""
 
     url = "https://api.giga.chat/v1/chat/completions"
     headers = {
@@ -157,7 +159,7 @@ def generate_post_ai(topic: str) -> str | None:
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.9,
-        "max_tokens": 400,
+        "max_tokens": 500,
     }
 
     try:
@@ -165,27 +167,177 @@ def generate_post_ai(topic: str) -> str | None:
         response.raise_for_status()
         
         result = response.json()
-        text = result["choices"][0]["message"]["content"].strip()
+        full_text = result["choices"][0]["message"]["content"].strip()
         
-        logger.info("Пост сгенерирован успешно (%d символов).", len(text))
-        return text
+        # Извлекаем промпт для картинки
+        image_prompt = topic  # По умолчанию используем топик
+        
+        if "IMAGE_PROMPT:" in full_text:
+            parts = full_text.split("IMAGE_PROMPT:")
+            full_text = parts[0].strip()
+            image_prompt = parts[1].strip() if len(parts) > 1 else topic
+        
+        logger.info("Пост сгенерирован успешно (%d символов).", len(full_text))
+        logger.info("Промпт для картинки: %s", image_prompt)
+        
+        return full_text, image_prompt
+    
     except Exception as e:
         logger.error("Ошибка генерации через GigaChat: %s", e)
-        if 'response' in locals():
-            logger.error("Ответ сервера: %s", response.text[:500])
         return None
 
-def generate_post(topics: list) -> str:
-    topic = get_next_topic(topics)
-    post = generate_post_ai(topic)
-    return post if post else random.choice(FALLBACK_POSTS)
+# ─────────────────────── Генерация изображения ───────────────────
+
+def generate_image_from_gigachat(image_prompt: str, access_token: str) -> str | None:
+    """Генерирует изображение через GigaChat API."""
+    logger.info("Генерирую изображение по запросу: %s", image_prompt)
+    
+    # Улучшаем промпт для лучшего качества
+    enhanced_prompt = f"Photorealistic nature photography: {image_prompt}, high quality, detailed, professional, 4K"
+    
+    url = "https://api.giga.chat/v1/files"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    
+    payload = {
+        "model": "GigaChat-2-Images",
+        "prompt": enhanced_prompt,
+        "size": "1024x1024",
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, verify=VERIFY_SSL, timeout=60)
+        response.raise_for_status()
+        
+        result = response.json()
+        file_id = result.get("id")
+        
+        if not file_id:
+            logger.error("GigaChat не вернул file_id для изображения")
+            return None
+        
+        # Скачиваем сгенерированное изображение
+        download_url = f"https://api.giga.chat/v1/files/{file_id}/content"
+        img_response = requests.get(
+            download_url, 
+            headers={"Authorization": f"Bearer {access_token}"}, 
+            verify=VERIFY_SSL, 
+            timeout=30
+        )
+        img_response.raise_for_status()
+        
+        # Сохраняем во временный файл
+        temp_file = Path("temp_image.jpg")
+        with open(temp_file, "wb") as f:
+            f.write(img_response.content)
+        
+        logger.info("✅ Изображение сгенерировано и сохранено.")
+        return str(temp_file)
+    
+    except Exception as e:
+        logger.error("Ошибка генерации изображения: %s", e)
+        return None
+
+
+def download_image_from_unsplash(query: str) -> str | None:
+    """Скачивает релевантное фото с Unsplash по ключевому слову."""
+    if not UNSPLASH_ACCESS_KEY:
+        logger.warning("UNSPLASH_ACCESS_KEY не задан — пропускаем Unsplash.")
+        return None
+    
+    url = "https://api.unsplash.com/photos/random"
+    params = {
+        "query": query,
+        "orientation": "landscape",
+        "client_id": UNSPLASH_ACCESS_KEY,
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        
+        data = response.json()
+        image_url = data["urls"]["regular"]
+        
+        # Скачиваем изображение
+        img_response = requests.get(image_url, timeout=15)
+        img_response.raise_for_status()
+        
+        temp_file = Path("temp_image.jpg")
+        with open(temp_file, "wb") as f:
+            f.write(img_response.content)
+        
+        logger.info("✅ Фото загружено с Unsplash: %s", query)
+        return str(temp_file)
+    
+    except Exception as e:
+        logger.error("Ошибка загрузки фото с Unsplash: %s", e)
+        return None
+
+
+def get_relevant_image(topic: str, access_token: str | None) -> str | None:
+    """
+    Получает релевантное теме изображение.
+    Приоритет: 1) GigaChat генерация, 2) Unsplash поиск.
+    """
+    if not access_token:
+        logger.warning("Нет токена GigaChat — пробуем Unsplash.")
+        return download_image_from_unsplash(topic)
+    
+    # Пробуем сгенерировать через GigaChat
+    image_path = generate_image_from_gigachat(topic, access_token)
+    
+    if image_path:
+        return image_path
+    
+    # Fallback на Unsplash
+    logger.info("GigaChat не сгенерировал — пробуем Unsplash.")
+    return download_image_from_unsplash(topic)
 
 # ──────────────────────── Отправка в Telegram ──────────────────────
 
-def send_to_telegram(text: str) -> bool:
+def send_photo_to_telegram(photo_path: str, caption: str) -> bool:
+    """Отправляет фото с подписью в Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHANNEL_ID не заданы!")
-        sys.exit(1)
+        return False
+    
+    url = f"{TELEGRAM_API}/sendPhoto"
+    
+    try:
+        with open(photo_path, "rb") as photo_file:
+            files = {"photo": photo_file}
+            data = {
+                "chat_id": TELEGRAM_CHANNEL_ID,
+                "caption": caption,
+                "parse_mode": "Markdown",
+            }
+            resp = requests.post(url, files=files, data=data, timeout=30)
+            resp.raise_for_status()
+        
+        logger.info("✅ Фото с постом успешно отправлено в %s", TELEGRAM_CHANNEL_ID)
+        
+        # Удаляем временный файл
+        try:
+            Path(photo_path).unlink()
+        except Exception:
+            pass
+        
+        return True
+    
+    except Exception as e:
+        logger.error("❌ Ошибка отправки фото: %s", e)
+        return False
+
+
+def send_text_to_telegram(text: str) -> bool:
+    """Отправляет текстовое сообщение в Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
+        logger.error("TELEGRAM_BOT_TOKEN или TELEGRAM_CHANNEL_ID не заданы!")
+        return False
 
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
@@ -198,7 +350,7 @@ def send_to_telegram(text: str) -> bool:
     try:
         resp = requests.post(url, json=payload, timeout=30)
         resp.raise_for_status()
-        logger.info("✅ Пост успешно отправлен в %s", TELEGRAM_CHANNEL_ID)
+        logger.info("✅ Текстовый пост успешно отправлен в %s", TELEGRAM_CHANNEL_ID)
         return True
     except requests.HTTPError as e:
         logger.error("❌ Ошибка Telegram API: %s — %s", resp.status_code, resp.text)
@@ -211,18 +363,46 @@ def send_to_telegram(text: str) -> bool:
                 return True
         return False
     except Exception as e:
-        logger.error("❌ Неизвестная ошибка: %s", e)
+        logger.error(" Неизвестная ошибка: %s", e)
         return False
 
 # ──────────────────────────── Main ─────────────────────────────────
 
 def main():
-    logger.info("🚀 Запуск Nature Telegram Bot (GigaChat v1 Direct) — %s", datetime.now(timezone.utc).isoformat())
+    logger.info("🚀 Запуск Nature Telegram Bot (GigaChat v1 + Images) — %s", datetime.now(timezone.utc).isoformat())
+    
     topics = load_topics()
-    post = generate_post(topics)
-    logger.info("Содержимое поста:\n%s", post)
-    success = send_to_telegram(post)
+    topic = get_next_topic(topics)
+    
+    # Получаем токен GigaChat
+    access_token = get_gigachat_token()
+    
+    # Генерируем текст поста И промпт для картинки
+    result = generate_post_ai(topic, access_token)
+    
+    if not result:
+        # Fallback на готовый пост
+        post_text = random.choice(FALLBACK_POSTS)
+        image_prompt = topic
+    else:
+        post_text, image_prompt = result
+    
+    logger.info("Содержимое поста:\n%s", post_text)
+    
+    # Получаем релевантное изображение
+    image_path = None
+    if access_token or UNSPLASH_ACCESS_KEY:
+        image_path = get_relevant_image(image_prompt, access_token)
+    
+    # Отправляем пост (с фото или без)
+    if image_path and Path(image_path).exists():
+        success = send_photo_to_telegram(image_path, post_text)
+    else:
+        logger.warning("Изображение не получено — отправляю только текст.")
+        success = send_text_to_telegram(post_text)
+    
     sys.exit(0 if success else 1)
+
 
 if __name__ == "__main__":
     main()
